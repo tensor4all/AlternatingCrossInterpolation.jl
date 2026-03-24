@@ -8,7 +8,7 @@ makedocs(;
     authors="Marc Ritter <mritter@flatironinstitute.org> and contributors",
     sitename="AlternatingCrossInterpolation.jl",
     format=Documenter.HTML(;
-        canonical="https://rittermarc.github.io/AlternatingCrossInterpolation.jl",
+        canonical="https://tensor4all.github.io/AlternatingCrossInterpolation.jl",
         edit_link="main",
         assets=String[],
     ),
@@ -18,6 +18,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/rittermarc/AlternatingCrossInterpolation.jl",
+    repo="github.com/tensor4all/AlternatingCrossInterpolation.jl",
     devbranch="main",
 )

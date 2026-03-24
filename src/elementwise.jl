@@ -212,6 +212,28 @@ function initializeproblem!(problem::ElementwiseProblem{ValueType,N}) where {Val
     nothing
 end
 
+@doc raw"""
+    elementwise(
+        op::Function,
+        inputs::Vector{<:TensorTrain{ValueType,N}};
+        max_iters::Integer=20, min_iters::Integer=2,
+        truncationparameters::TruncationParameters=TruncationParameters(typemax(Int), 1e-12, true),
+        initial_guess::TensorTrain=randomtt(ValueType, TCI.sitedims(inputs[1]), min.([TCI.linkdims(X) for X in inputs]...))
+    ) where {ValueType,N}
+    
+Compute the elementwise application of `op` to the input tensor trains in `inputs` using an alternating optimization procedure. The function returns a tuple containing the resulting tensor train, a vector of bond dimensions at each iteration, and a vector of pivot errors at each iteration. For example, to compute a Hadamard product of two tensor trains `A` and `B`, you could call:
+```julia
+result, ranks, errors = elementwise(*, [A, B])
+``` 
+
+# Arguments
+- `op::Function`: The function to apply elementwise to the input tensor trains.
+- `inputs::Vector{<:TensorTrain{ValueType,N}}`: A vector of tensor trains to which the function will be applied. All tensor trains must have the same number of sites and the same local dimensions.
+- `max_iters::Integer=20`: The maximum number of iterations to perform.
+- `min_iters::Integer=2`: The minimum number of iterations to perform before checking for convergence.
+- `truncationparameters::TruncationParameters=TruncationParameters(typemax(Int), 1e-12, true)`: Parameters controlling the truncation of the tensor train during the optimization process.
+- `initial_guess::TensorTrain=randomtt(ValueType, TCI.sitedims(inputs[1]), min.([TCI.linkdims(X) for X in inputs]...))`: An initial guess for the resulting tensor train. If not provided, a random tensor train with appropriate dimensions will be generated.
+"""
 function elementwise(
     op::Function,
     inputs::Vector{<:TensorTrain{ValueType,N}};

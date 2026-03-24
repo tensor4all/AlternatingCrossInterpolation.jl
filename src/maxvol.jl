@@ -1,4 +1,10 @@
+@doc raw"""
+    TruncationParameters(; maxbonddimension::Int=typemax(Int), tolerance::Float64=1e-14)
 
+A struct to hold parameters for truncation of matrices in the maxvol algorithm.
+- `maxbonddimension`: The maximum allowed bond dimension (rank) after truncation. Default is `typemax(Int)`, which means no limit.
+- `tolerance`: The absolute tolerance for truncation. Default is `1e-14`.
+"""
 @kwdef struct TruncationParameters
     maxbonddimension::Int=typemax(Int)
     tolerance::Float64=1e-14
