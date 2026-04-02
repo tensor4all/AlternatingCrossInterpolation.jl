@@ -4,7 +4,7 @@
 [![Build Status](https://github.com/tensor4all/AlternatingCrossInterpolation.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/tensor4all/AlternatingCrossInterpolation.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Aqua](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
-This package implements the _alternating cross interpolation_ method for efficient elementwise operations on tensor trains, such as Hadamard products.
+This package implements the _alternating cross interpolation_ method for efficient elementwise operations on tensor trains, as presented in [arXiv:2604.00037](https://doi.org/10.48550/arXiv.2604.00037).
 
 ## Installation
 
