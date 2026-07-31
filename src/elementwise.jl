@@ -6,6 +6,7 @@ mutable struct ElementwiseProblem{ValueType,N}
     rightframes::OffsetMatrix{Matrix{ValueType},Matrix{Matrix{ValueType}}}
 
     pivoterrors::Vector{Float64}
+    maxsamplevalue::Float64
 
     function ElementwiseProblem{ValueType,N}(
         inputs::Vector{TensorTrain{ValueType,N}},
@@ -22,7 +23,8 @@ mutable struct ElementwiseProblem{ValueType,N}
             deepcopy(initial_guess),
             Origin(1, 0)(Matrix{Matrix{ValueType}}(undef, Ninputs, Nsites + 1)),
             Origin(1, 1)(Matrix{Matrix{ValueType}}(undef, Ninputs, Nsites + 1)),
-            zeros(Nsites)
+            zeros(Nsites),
+            0.0 # maxsamplevalue
         )
 
         problem.leftframes[:, 0] .= Ref(ones(ValueType, 1, 1))
@@ -149,6 +151,10 @@ function pitensor(
     )
 end
 
+function updatemaxsample!(problem::ElementwiseProblem{ValueType,N}, Π::AbstractArray{ValueType}) where {ValueType,N}
+    problem.maxsamplevalue = max(problem.maxsamplevalue, maximum(abs, Π))
+end
+
 function localupdate!(
     op::Function,
     problem::ElementwiseProblem{ValueType,N},
@@ -159,6 +165,10 @@ function localupdate!(
     @debug "Local update" bondindex leftorthogonal
     Πs = [pitensor(problem, k, bondindex) for k in eachinputindex(problem)]
     Π = op.(Πs...)
+
+    if truncationparameters.scaletolerance
+        updatemaxsample!(problem, Π)
+    end
 
     luci = TCI.MatrixLUCI(
         reshape(Π, prod(size(Π)[1:2]), prod(size(Π)[3:4]));
@@ -267,6 +277,13 @@ function elementwise(
     end
 
     for iteration in 1:max_iters
+        if truncationparameters.scaletolerance
+            truncationparameters = TruncationParameters(
+                truncationparameters.maxbonddimension,
+                truncationparameters.tolerance * problem.maxsamplevalue,
+                true
+                )
+        end
         forward = isodd(iteration)
         for bondindex in sweep(eachbondindex(problem); forward)
             localupdate!(op, problem, bondindex; leftorthogonal=forward, truncationparameters)
