@@ -1,65 +1,3 @@
-mutable struct ElementwiseProblem{ValueType,N}
-    inputs::Vector{TensorTrain{ValueType,N}}
-    solution::TensorTrain{ValueType,N}
-
-    leftframes::OffsetMatrix{Matrix{ValueType},Matrix{Matrix{ValueType}}}
-    rightframes::OffsetMatrix{Matrix{ValueType},Matrix{Matrix{ValueType}}}
-
-    pivoterrors::Vector{Float64}
-    maxsamplevalue::Float64
-
-    function ElementwiseProblem{ValueType,N}(
-        inputs::Vector{TensorTrain{ValueType,N}},
-        initial_guess::TensorTrain{ValueType,N}
-    ) where {ValueType,N}
-        Ninputs = length(inputs)
-        Nsites = length(first(inputs))
-
-        @assert all(length.(inputs) .== Nsites) "All input tensor trains must have the same number of sites."
-        @assert allequal(TCI.sitedims, inputs) "All input tensor trains must have the same local dimensions."
-
-        problem = new{ValueType,N}(
-            inputs,
-            deepcopy(initial_guess),
-            Origin(1, 0)(Matrix{Matrix{ValueType}}(undef, Ninputs, Nsites + 1)),
-            Origin(1, 1)(Matrix{Matrix{ValueType}}(undef, Ninputs, Nsites + 1)),
-            zeros(Nsites),
-            0.0 # maxsamplevalue
-        )
-
-        problem.leftframes[:, 0] .= Ref(ones(ValueType, 1, 1))
-        problem.rightframes[:, Nsites+1] .= Ref(ones(ValueType, 1, 1))
-        return problem
-    end
-end
-
-function ElementwiseProblem(
-    inputs::Vector{TensorTrain{ValueType,N}},
-    initial_guess::TensorTrain{ValueType,N}
-) where {ValueType,N}
-    problem = ElementwiseProblem{ValueType,N}(inputs, initial_guess)
-    initializeproblem!(problem)
-    return problem
-end
-
-function Base.length(problem::ElementwiseProblem{ValueType,N}) where {ValueType,N}
-    return length(problem.solution)
-end
-
-function eachsiteindex(problem::ElementwiseProblem{ValueType,N}) where {ValueType,N}
-    return 1:length(problem)
-end
-
-function eachbondindex(problem::ElementwiseProblem{ValueType,N}) where {ValueType,N}
-    return eachsiteindex(problem)[begin:end-1]
-end
-
-function eachinputindex(problem::ElementwiseProblem{ValueType,N}) where {ValueType,N}
-    return eachindex(problem.inputs)
-end
-
-Base.eachindex(problem::ElementwiseProblem{ValueType,N}) where {ValueType,N} = eachsiteindex(problem)
-
 function updateleftframe(
     leftframe::AbstractMatrix{ValueType},
     sitetensor::AbstractArray{ValueType,3},
@@ -160,7 +98,8 @@ function localupdate!(
     problem::ElementwiseProblem{ValueType,N},
     bondindex::Integer;
     leftorthogonal::Bool,
-    truncationparameters::TruncationParameters
+    truncationparameters::TruncationParameters,
+    errorweighting::ErrorWeighting
 ) where {ValueType,N}
     @debug "Local update" bondindex leftorthogonal
     Πs = [pitensor(problem, k, bondindex) for k in eachinputindex(problem)]
@@ -170,12 +109,23 @@ function localupdate!(
         updatemaxsample!(problem, Π)
     end
 
+    bw = nothing
+    if errorweighting.is_nontrivial
+        updatecombinedIJ!(errorweighting, bondindex)
+        bw = bondweighting(errorweighting, bondindex)
+    end
+
     luci = TCI.MatrixLUCI(
         reshape(Π, prod(size(Π)[1:2]), prod(size(Π)[3:4]));
+        bondweighting=bw,
         leftorthogonal=leftorthogonal,
         maxrank=truncationparameters.maxbonddimension,
         abstol=truncationparameters.tolerance
     )
+
+    if errorweighting.is_nontrivial
+        updatepivots!(errorweighting, bondindex, luci)
+    end
 
     problem.solution.sitetensors[bondindex] = reshape(TCI.left(luci), size(Π, 1), size(Π, 2), :)
     problem.solution.sitetensors[bondindex+1] = reshape(TCI.right(luci), :, size(Π, 3), size(Π, 4))
@@ -249,7 +199,8 @@ function elementwise(
     inputs::Vector{<:TensorTrain{ValueType,N}};
     max_iters::Integer=20, min_iters::Integer=2,
     truncationparameters::TruncationParameters=TruncationParameters(typemax(Int), 1e-12, true),
-    initial_guess::TensorTrain=randomtt(ValueType, TCI.sitedims(inputs[1]), min.([TCI.linkdims(X) for X in inputs]...))
+    initial_guess::TensorTrain=randomtt(ValueType, TCI.sitedims(inputs[1]), min.([TCI.linkdims(X) for X in inputs]...)),
+    weighting::Union{Function, Nothing}=nothing,
 ) where {ValueType,N}
     if any(length.(inputs) .!= length(inputs[1]))
         throw(ArgumentError("All input tensor trains must have the same number of sites."))
@@ -258,8 +209,10 @@ function elementwise(
         throw(ArgumentError("All input tensor trains must have the same local dimensions."))
     end
 
-    problem = ElementwiseProblem(inputs, initial_guess)
+    problem = ElementwiseProblem{ValueType,N}(inputs, initial_guess)
     @debug "Frame sizes" size.(problem.rightframes[1, :]) size.(problem.rightframes[2, :])
+    errorweighting = ErrorWeighting(problem, weighting, !isnothing(weighting))
+    initializeproblem!(problem)
 
     ranks = Int[]
     errors = Float64[]
@@ -286,7 +239,7 @@ function elementwise(
         end
         forward = isodd(iteration)
         for bondindex in sweep(eachbondindex(problem); forward)
-            localupdate!(op, problem, bondindex; leftorthogonal=forward, truncationparameters)
+            localupdate!(op, problem, bondindex; errorweighting=errorweighting, leftorthogonal=forward, truncationparameters)
         end
 
         @debug "Sweep $iteration, $(forward ? "forward" : "backward")" bonddimensions = "$(TCI.linkdims(problem.solution))" pivoterrors = "$(problem.pivoterrors)"

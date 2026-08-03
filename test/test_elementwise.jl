@@ -69,37 +69,53 @@ end
     @test maximum(abs, fullFG .- fullFGexact) < 1e-10
 end
 
-@testset "ElementwiseProblem: Gaussians with tolerance scaling" begin
+@testset "ElementwiseProblem: Gaussians with tolerance scaling & mild weighting" begin
     R = 7
+    qg = QG.DiscretizedGrid{2}(R, (0., 0.), (5., 5.), unfoldingscheme=:fused)
+    ws = (
+        nothing,
+        q -> begin 
+            x = QG.quantics_to_origcoord(qg,q)
+            return 1 - 0.1*exp(-sum(x .^ 2)/20)
+        end,
+        q -> begin 
+            x = QG.quantics_to_origcoord(qg,q)
+            return 1 + 1/(1 + sum(x .^ 2))
+        end,
+        )
+    w_names = ("none", "minus Gaussian", "plus Lorentzian")
     for scale in (1.e4, 1.e-4)
-        # put Gaussians closer to each other this time
-        f(x) = scale * exp(-sum(x .^ 2))
-        g(x) = scale * prod(cos.(x)) * exp(-sum((x .- 0.2) .^ 2))
+        for (w,w_name) in zip(ws, w_names)
+        @testset "Weighting $(w_name), scale $scale" begin
+            # put Gaussians closer to each other this time
+            f(x) = scale * exp(-sum(x .^ 2))
+            g(x) = scale * prod(cos.(x)) * exp(-sum((x .- 0.2) .^ 2))
 
-        qg = QG.DiscretizedGrid{2}(R, (0., 0.), (5., 5.), unfoldingscheme=:fused)
-        Fqtt, _, _ = TCI.crossinterpolate2(
-            Float64,
-            q -> f(QG.quantics_to_origcoord(qg, q)),
-            QG.localdimensions(qg),
-            tolerance=1e-12
-        )
-        Gqtt, _, _ = TCI.crossinterpolate2(
-            Float64,
-            q -> g(QG.quantics_to_origcoord(qg, q)),
-            QG.localdimensions(qg),
-            tolerance=1e-12
-        )
+            Fqtt, _, _ = TCI.crossinterpolate2(
+                Float64,
+                q -> f(QG.quantics_to_origcoord(qg, q)),
+                QG.localdimensions(qg),
+                tolerance=1e-12
+            )
+            Gqtt, _, _ = TCI.crossinterpolate2(
+                Float64,
+                q -> g(QG.quantics_to_origcoord(qg, q)),
+                QG.localdimensions(qg),
+                tolerance=1e-12
+            )
 
-        Ftt = TCI.tensortrain(Fqtt)
-        Gtt = TCI.tensortrain(Gqtt)
-        FGtt, = ACI.elementwise(.*, [Ftt, Gtt]; truncationparameters=ACI.TruncationParameters(typemax(Int), 1e-12, true))
+            Ftt = TCI.tensortrain(Fqtt)
+            Gtt = TCI.tensortrain(Gqtt)
+            FGtt, = ACI.elementwise(.*, [Ftt, Gtt]; truncationparameters=ACI.TruncationParameters(typemax(Int), 1e-12, true))
 
-        fullF = fulltensor(Ftt)
-        fullG = fulltensor(Gtt)
-        fullFGexact = fullF .* fullG
-        fullFG = fulltensor(FGtt)
+            fullF = fulltensor(Ftt)
+            fullG = fulltensor(Gtt)
+            fullFGexact = fullF .* fullG
+            fullFG = fulltensor(FGtt)
 
-        @test maximum(abs, fullFG .- fullFGexact) / maximum(abs, fullFGexact) < 1e-10
+            @test maximum(abs, fullFG .- fullFGexact) / maximum(abs, fullFGexact) < 1e-10
+        end
+        end
     end
 end
 

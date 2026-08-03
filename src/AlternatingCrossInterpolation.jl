@@ -14,6 +14,9 @@ include("randomtt.jl")
 include("maxvol.jl")
 include("contract.jl")
 include("frame.jl")
+include("elementwise_problem.jl")
+include("pivottracker.jl")
+include("error_weighting.jl")
 include("elementwise.jl")
 
 end
