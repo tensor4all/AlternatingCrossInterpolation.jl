@@ -202,3 +202,64 @@ end
     @test maximum(abs, FGdata .- Exactdata) < 1e-10
 end
 
+@testset "Elementwise tolerance scaling" begin
+    d = sqrt(10.0) .^ (-3:3)
+    M = diagm(0 => d)
+    tol = 1e-10
+    # full rank inputs
+    Mt1 = TCI.crossinterpolate2(Float64, v -> M[v[1],v[2]], collect(size(M)); tolerance=tol)[1]
+    Mt2 = deepcopy(Mt1)
+
+    # rank 4<7
+    for e in -7:-1
+        tol = 5*10.0^e
+        MM = ACI.elementwise(
+            .* , TCI.tensortrain.([Mt1, Mt2]);
+            truncationparameters=ACI.TruncationParameters(100, tol, true),
+            )[1]
+        @test TCI.rank(MM) == -e
+    end
+end
+
+@testset "Elementwise with error weighting: correctness of pivot permutation" begin
+    d = sqrt(10.0) .^ (-6:0)
+    M = diagm(0 => d)
+    tol = 1e-10
+    # full rank inputs
+    Mt1 = TCI.crossinterpolate2(Float64, v -> M[v[1],v[2]], collect(size(M)); tolerance=tol)[1]
+    Mt2 = deepcopy(Mt1)
+
+    # rank 4<7
+    MM = ACI.elementwise(
+        .* , TCI.tensortrain.([Mt1, Mt2]);
+        truncationparameters=ACI.TruncationParameters(100, 5.e-4, true),
+        )[1]
+    @test TCI.rank(MM) == 4
+
+
+    # full rank
+    weight(v) = 1/(d[v[1]] * d[v[2]])
+    MM_weighted = ACI.elementwise(
+        .* , TCI.tensortrain.([Mt1, Mt2]);
+        truncationparameters=ACI.TruncationParameters(100, 5.e-1, true),
+        weighting=weight,
+        )[1]
+    @test TCI.rank(MM_weighted) == 7
+    # check correctness of tensors
+    fullM = fulltensor(Mt1) .* fulltensor(Mt2)
+    fullM_weighted = fulltensor(MM_weighted)
+    @test maximum(abs, fullM_weighted .- fullM) < 1e-10
+    
+
+    # discard largest entry
+    weight(v) = 1/(d[v[1]] * d[v[2]]) * (v[1]==7&&v[2]==7 ? 1.e-6 : 1.0)
+    MM_weighted = ACI.elementwise(
+        .* , TCI.tensortrain.([Mt1, Mt2]);
+        truncationparameters=ACI.TruncationParameters(100, 5.e-4, true),
+        weighting=weight,
+        )[1]
+    @test TCI.rank(MM_weighted) == 6
+    fullM_weighted = fulltensor(MM_weighted)
+    @test maximum(abs, fullM_weighted[1,1:end-1,1:end-1,1] .- fullM[1,1:end-1,1:end-1,1]) < 1e-10
+    @test fullM_weighted[1,end,end,1] ≈ 0.0
+end
