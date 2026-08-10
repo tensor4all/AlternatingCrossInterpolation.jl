@@ -37,6 +37,39 @@ function fulltensor(tt::TCI.AbstractTensorTrain)
     end
 end
 
+@testset "ElementwiseProblem: environments" begin
+    R = 20
+
+    for normalize_environment in (true, false)
+        @testset "normalize_environment = $normalize_environment" begin
+        f(x) = exp(-x / 100) * cos((x/20)^2)
+
+        qg = QG.DiscretizedGrid{1}(R, (0.,), (300.,), unfoldingscheme=:interleaved)
+        Fqtt, _, _ = TCI.crossinterpolate2(
+            Float64,
+            q -> f(QG.quantics_to_origcoord(qg, q)),
+            QG.localdimensions(qg),
+            tolerance=1e-12
+        )
+
+        Ftt = TCI.tensortrain(Fqtt)
+        ncopies = 20
+        fp20, = ACI.elementwise(
+            (x...) -> prod(x), fill(Ftt, ncopies);
+            environment_mode=true,
+            normalize_environment=normalize_environment,
+        )
+
+        xindices = Int.(round.(range(1, stop=2^R, length=64)))
+        xquantics = [QG.grididx_to_quantics(qg, (i,)) for i in xindices]
+        xgrid = [QG.grididx_to_origcoord(qg, (i,))[1] for i in xindices]
+        approx = [fp20(q) for q in xquantics]
+        exact = [f(x)^ncopies for x in xgrid]
+        @test maximum(abs, approx .- exact) / maximum(abs, exact) < 1e-8
+        end
+    end
+end
+
 @testset "ElementwiseProblem: Gaussians" begin
     R = 7
 
@@ -238,11 +271,11 @@ end
 
 
     # full rank
-    weight(v) = 1/(d[v[1]] * d[v[2]])
+    weight1(v) = 1/(d[v[1]] * d[v[2]])
     MM_weighted = ACI.elementwise(
         .* , TCI.tensortrain.([Mt1, Mt2]);
         truncationparameters=ACI.TruncationParameters(100, 5.e-1, true),
-        weighting=weight,
+        weighting=weight1,
         )[1]
     @test TCI.rank(MM_weighted) == 7
     # check correctness of tensors
@@ -252,11 +285,11 @@ end
     
 
     # discard largest entry
-    weight(v) = 1/(d[v[1]] * d[v[2]]) * (v[1]==7&&v[2]==7 ? 1.e-6 : 1.0)
+    weight2(v) = 1/(d[v[1]] * d[v[2]]) * (v[1]==7&&v[2]==7 ? 1.e-6 : 1.0)
     MM_weighted = ACI.elementwise(
         .* , TCI.tensortrain.([Mt1, Mt2]);
         truncationparameters=ACI.TruncationParameters(100, 5.e-4, true),
-        weighting=weight,
+        weighting=weight2,
         )[1]
     @test TCI.rank(MM_weighted) == 6
     fullM_weighted = fulltensor(MM_weighted)

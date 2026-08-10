@@ -77,6 +77,24 @@ function pitensor(
     return contract(L, [3], R, [1])
 end
 
+function environments(
+    problem::ElementwiseProblem{ValueType,3}, bondindex::Integer
+) where {ValueType}
+    sol = problem.solution
+    # sum over local dimensions
+    sum_L = [sum(sol.sitetensors[b]; dims=2) for b in 1:bondindex-1]
+    sum_R = [sum(sol.sitetensors[b]; dims=2) for b in reverse(bondindex+2:length(sol.sitetensors))]
+    sum_L = [dropdims(s, dims=2) for s in sum_L]
+    sum_R = [dropdims(s, dims=2) for s in sum_R]
+    isempty(sum_L) && (sum_L = [fill(one(ValueType), 1, 1)])
+    isempty(sum_R) && (sum_R = [fill(one(ValueType), 1, 1)])
+    L = reduce(*, sum_L)
+    R = reduce((a, b) -> b * a, sum_R)
+    @assert size(L)[begin] == 1
+    @assert size(R)[end] == 1
+    return dropdims(L, dims=1), dropdims(R, dims=ndims(R))
+end
+
 function pitensor(
     problem::ElementwiseProblem{ValueType,N},
     inputindex::Integer, bondindex::Integer
@@ -99,7 +117,9 @@ function localupdate!(
     bondindex::Integer;
     leftorthogonal::Bool,
     truncationparameters::TruncationParameters,
-    errorweighting::ErrorWeighting
+    errorweighting::ErrorWeighting,
+    environment_mode::Bool,
+    normalize_environment::Bool, # only relevant if environment_mode is true
 ) where {ValueType,N}
     @debug "Local update" bondindex leftorthogonal
     Πs = [pitensor(problem, k, bondindex) for k in eachinputindex(problem)]
@@ -113,6 +133,20 @@ function localupdate!(
     if errorweighting.is_nontrivial
         updatecombinedIJ!(errorweighting, bondindex)
         bw = bondweighting(errorweighting, bondindex)
+    end
+    if environment_mode
+        # sum frames
+        L, R = environments(problem, bondindex)
+        ml, mr = normalize_environment ? (maximum(abs, L), maximum(abs, R)) : (1.0, 1.0)
+        # L, R live on virtual bonds χ₁, χ₂ (physical legs already summed in environments).
+        # Combined LU indices i,j map via CartesianIndices of (χ₁,d) and (d,χ₂).
+        cl = CartesianIndices(size(Π)[1:2])
+        cr = CartesianIndices(size(Π)[3:4])
+        if isnothing(bw)
+            bw = (i, j) -> abs(L[cl[i][1]] * R[cr[j][2]]) / (ml * mr)
+        else
+            bw = (i, j) -> abs(bw(i, j) * L[cl[i][1]] * R[cr[j][2]]) / (ml * mr)
+        end
     end
 
     abstol = if truncationparameters.scaletolerance
@@ -206,6 +240,8 @@ function elementwise(
     truncationparameters::TruncationParameters=TruncationParameters(typemax(Int), 1e-12, true),
     initial_guess::TensorTrain=randomtt(ValueType, TCI.sitedims(inputs[1]), min.([TCI.linkdims(X) for X in inputs]...)),
     weighting::Union{Function, Nothing}=nothing,
+    environment_mode::Bool=false,
+    normalize_environment::Bool=false, # only relevant if environment_mode is true
 ) where {ValueType,N}
     if any(length.(inputs) .!= length(inputs[1]))
         throw(ArgumentError("All input tensor trains must have the same number of sites."))
@@ -242,7 +278,15 @@ function elementwise(
     for iteration in 1:max_iters
         forward = isodd(iteration)
         for bondindex in sweep(eachbondindex(problem); forward)
-            localupdate!(op, problem, bondindex; errorweighting=errorweighting, leftorthogonal=forward, truncationparameters)
+            localupdate!(
+                op,
+                problem,
+                bondindex; errorweighting=errorweighting,
+                leftorthogonal=forward,
+                truncationparameters,
+                environment_mode=environment_mode,
+                normalize_environment=normalize_environment
+            )
         end
 
         @debug "Sweep $iteration, $(forward ? "forward" : "backward")" bonddimensions = "$(TCI.linkdims(problem.solution))" pivoterrors = "$(problem.pivoterrors)"
