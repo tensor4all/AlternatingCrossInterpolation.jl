@@ -169,12 +169,18 @@ function localupdate!(
     if truncationparameters.scaletolerance
         updatemaxsample!(problem, Π)
     end
+    # only scale tolerance if maxsamplevalue is not zero
+    abstol = if truncationparameters.scaletolerance && (problem.maxsamplevalue > 0.0)
+        truncationparameters.tolerance * problem.maxsamplevalue
+    else
+        truncationparameters.tolerance
+    end
 
     luci = TCI.MatrixLUCI(
         reshape(Π, prod(size(Π)[1:2]), prod(size(Π)[3:4]));
         leftorthogonal=leftorthogonal,
         maxrank=truncationparameters.maxbonddimension,
-        abstol=truncationparameters.tolerance
+        abstol=abstol
     )
 
     problem.solution.sitetensors[bondindex] = reshape(TCI.left(luci), size(Π, 1), size(Π, 2), :)
@@ -265,9 +271,14 @@ function elementwise(
     errors = Float64[]
 
     function convergencecriterion(iteration)
+        tol = if truncationparameters.scaletolerance
+            truncationparameters.tolerance * problem.maxsamplevalue
+        else
+            truncationparameters.tolerance
+        end
         if iteration < min_iters
             return false
-        elseif errors[iteration] > truncationparameters.tolerance
+        elseif errors[iteration] > tol
             return false
         elseif any(last(ranks, min_iters) .> ranks[iteration-min_iters+1])
             return false
@@ -277,13 +288,6 @@ function elementwise(
     end
 
     for iteration in 1:max_iters
-        if truncationparameters.scaletolerance
-            truncationparameters = TruncationParameters(
-                truncationparameters.maxbonddimension,
-                truncationparameters.tolerance * problem.maxsamplevalue,
-                true
-                )
-        end
         forward = isodd(iteration)
         for bondindex in sweep(eachbondindex(problem); forward)
             localupdate!(op, problem, bondindex; leftorthogonal=forward, truncationparameters)
