@@ -24,7 +24,13 @@ ttprod, ranks, errors = ACI.elementwise(*, [tt1, tt2]; truncationparameters=trun
 ```
 The return values are
  - `ttprod`, the resulting tensor train, and
- - `ranks` and `errors`, the rank and error estimate in each iteration of the algorithm.
+ - `ranks` and `errors`, the rank and absolute pivot-error estimate in each iteration of the algorithm.
+
+By default, `elementwise` checks every sweep with a global floating-zone pivot
+search so features outside the bond-local crosses cannot silently disappear.
+Set `nsearchglobalpivot=0` to disable this guard. Runs also stop once the rank
+has remained at the configured maximum bond dimension for the convergence
+window.
 
 ## Example
 This example obtains TTs representing two Gaussians, and multiplies them with a maximum bond dimension of 15.

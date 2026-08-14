@@ -37,6 +37,138 @@ function fulltensor(tt::TCI.AbstractTensorTrain)
     end
 end
 
+function twopeaktt(nsites)
+    localdim = 4
+    gauss(peak, value) = exp(-0.5 * (value - peak)^2)
+    tensors = Array{Float64,3}[]
+    for site in 1:nsites
+        leftdim, rightdim = site == 1 ? (1, 2) : site == nsites ? (2, 1) : (2, 2)
+        tensor = zeros(leftdim, localdim, rightdim)
+        for right in 1:rightdim, value in 1:localdim, left in 1:leftdim
+            tensor[left, value, right] = if site == 1 && left == 1 && right == 1
+                3.0 * gauss(1, value)
+            elseif site == 1 && left == 1 && right == 2
+                2.0 * gauss(4, value)
+            elseif site == nsites && left == 2 && right == 1
+                gauss(4, value)
+            elseif left == 1 && right == 1
+                gauss(1, value)
+            elseif left == 2 && right == 2
+                gauss(4, value)
+            else
+                0.0
+            end
+        end
+        push!(tensors, tensor)
+    end
+    return TCI.TensorTrain(tensors)
+end
+
+@testset "One-site elementwise operation" begin
+    A = TCI.TensorTrain([reshape([1.0, 2.0], 1, 2, 1)])
+    B = TCI.TensorTrain([reshape([3.0, 4.0], 1, 2, 1)])
+
+    result, ranks, errors = ACI.elementwise(*, [A, B])
+
+    @test result([1]) == 3.0
+    @test result([2]) == 8.0
+    @test isempty(ranks)
+    @test isempty(errors)
+end
+
+@testset "Public input validation" begin
+    A = TCI.TensorTrain([ones(1, 2, 1), ones(1, 2, 1)])
+    shorter = TCI.TensorTrain([ones(1, 2, 1)])
+    different_site = TCI.TensorTrain([ones(1, 3, 1), ones(1, 2, 1)])
+    emptytt = TCI.TensorTrain{Float64,3}(Array{Float64,3}[])
+    large_guess = ACI.randomtt(Float64, fill([2], 2), [2])
+
+    @test_throws ArgumentError ACI.elementwise(identity, TCI.TensorTrain[])
+    @test_throws ArgumentError ACI.elementwise(identity, [emptytt])
+    @test_throws ArgumentError ACI.elementwise(identity, TCI.TensorTrain{Float64,3}[A, shorter])
+    @test_throws ArgumentError ACI.elementwise(identity, [A, different_site])
+    @test_throws ArgumentError ACI.elementwise(identity, [A]; max_iters=0)
+    @test_throws ArgumentError ACI.elementwise(identity, [A]; min_iters=0)
+    @test_throws ArgumentError ACI.elementwise(identity, [A]; max_iters=1, min_iters=2)
+    @test_throws ArgumentError ACI.elementwise(
+        identity,
+        [A];
+        truncationparameters=ACI.TruncationParameters(0, 1e-12, false)
+    )
+    @test_throws ArgumentError ACI.elementwise(
+        identity,
+        [A];
+        truncationparameters=ACI.TruncationParameters(1, NaN, false)
+    )
+    @test_throws ArgumentError ACI.elementwise(
+        identity,
+        [A];
+        truncationparameters=ACI.TruncationParameters(1, 1e-12, false),
+        initial_guess=large_guess
+    )
+    @test_throws ArgumentError ACI.elementwise(identity, [A]; nsearchglobalpivot=-1)
+    @test_throws ArgumentError ACI.elementwise(identity, [A]; maxnglobalpivot=-1)
+    @test_throws ArgumentError ACI.elementwise(identity, [A]; tolmarginglobalsearch=Inf)
+end
+
+@testset "Global guard recovers a separated peak" begin
+    nsites = 10
+    input = twopeaktt(nsites)
+    guess = TCI.TensorTrain([ones(1, 4, 1) for _ in 1:nsites])
+    parameters = ACI.TruncationParameters(typemax(Int), 1e-4, true)
+
+    without_guard, = ACI.elementwise(
+        identity,
+        [input];
+        truncationparameters=parameters,
+        initial_guess=guess,
+        nsearchglobalpivot=0
+    )
+    Random.seed!(0)
+    with_guard, = ACI.elementwise(
+        identity,
+        [input];
+        truncationparameters=parameters,
+        initial_guess=guess,
+        nsearchglobalpivot=30
+    )
+
+    @test abs(without_guard(fill(4, nsites)) - 2.0) > 1.0
+    @test abs(with_guard(fill(1, nsites)) - 3.0) < 1e-8
+    @test abs(with_guard(fill(4, nsites)) - 2.0) < 1e-8
+end
+
+@testset "Binding bond cap stops early" begin
+    Random.seed!(1)
+    A = ACI.randomtt(Float64, fill([2], 6), 2)
+    B = ACI.randomtt(Float64, fill([2], 6), 2)
+    guess = TCI.TensorTrain([ones(1, 2, 1) for _ in 1:6])
+    parameters = ACI.TruncationParameters(1, 0.0, false)
+
+    result, ranks, errors = ACI.elementwise(
+        *,
+        [A, B];
+        max_iters=10,
+        min_iters=2,
+        truncationparameters=parameters,
+        initial_guess=guess
+    )
+
+    @test length(ranks) == 2
+    @test all(ranks .== 1)
+    @test all(errors .> 0)
+    @test all(TCI.linkdims(result) .<= 1)
+end
+
+@testset "Scaled and absolute tolerances" begin
+    input = TCI.TensorTrain([ones(1, 2, 1), ones(1, 2, 1)])
+    problem = ACI.ElementwiseProblem([input], input)
+    problem.maxsamplevalue = 100.0
+
+    @test ACI.effectivetolerance(problem, ACI.TruncationParameters(10, 1e-4, true)) == 1e-2
+    @test ACI.effectivetolerance(problem, ACI.TruncationParameters(10, 1e-4, false)) == 1e-4
+end
+
 @testset "ElementwiseProblem: Gaussians" begin
     R = 7
 
@@ -162,7 +294,7 @@ end
     )
 
     initialguess_bad = ACI.randomtt(Float64, TCI.sitedims(Fqtt), fill(20, R + 1), clampbonddimensions=false)
-    @test_throws BoundsError ACI.elementwise(
+    @test_throws ArgumentError ACI.elementwise(
         *, TCI.tensortrain.([Fqtt, Gqtt]);
         truncationparameters=ACI.TruncationParameters(100, 1e-12, true),
         initial_guess=initialguess_bad
