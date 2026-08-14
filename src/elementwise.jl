@@ -6,6 +6,8 @@ mutable struct ElementwiseProblem{ValueType,N}
     rightframes::OffsetMatrix{Matrix{ValueType},Matrix{Matrix{ValueType}}}
 
     pivoterrors::Vector{Float64}
+    maxsamplevalue::Float64
+    inputcaches::Vector{TCI.TTCache{ValueType}}
 
     function ElementwiseProblem{ValueType,N}(
         inputs::Vector{TensorTrain{ValueType,N}},
@@ -13,16 +15,16 @@ mutable struct ElementwiseProblem{ValueType,N}
     ) where {ValueType,N}
         Ninputs = length(inputs)
         Nsites = length(first(inputs))
-
-        @assert all(length.(inputs) .== Nsites) "All input tensor trains must have the same number of sites."
-        @assert allequal(TCI.sitedims, inputs) "All input tensor trains must have the same local dimensions."
+        flatdims = [[prod(d)] for d in TCI.sitedims(first(inputs))]
 
         problem = new{ValueType,N}(
             inputs,
             deepcopy(initial_guess),
             Origin(1, 0)(Matrix{Matrix{ValueType}}(undef, Ninputs, Nsites + 1)),
             Origin(1, 1)(Matrix{Matrix{ValueType}}(undef, Ninputs, Nsites + 1)),
-            zeros(Nsites)
+            zeros(Nsites),
+            0.0,
+            [TCI.TTCache(input, flatdims) for input in inputs]
         )
 
         problem.leftframes[:, 0] .= Ref(ones(ValueType, 1, 1))
@@ -149,6 +151,10 @@ function pitensor(
     )
 end
 
+function updatemaxsample!(problem::ElementwiseProblem{ValueType,N}, Π::AbstractArray{ValueType}) where {ValueType,N}
+    problem.maxsamplevalue = max(problem.maxsamplevalue, maximum(abs, Π))
+end
+
 function localupdate!(
     op::Function,
     problem::ElementwiseProblem{ValueType,N},
@@ -160,11 +166,16 @@ function localupdate!(
     Πs = [pitensor(problem, k, bondindex) for k in eachinputindex(problem)]
     Π = op.(Πs...)
 
+    if truncationparameters.scaletolerance
+        updatemaxsample!(problem, Π)
+    end
+    abstol = effectivetolerance(problem, truncationparameters)
+
     luci = TCI.MatrixLUCI(
         reshape(Π, prod(size(Π)[1:2]), prod(size(Π)[3:4]));
         leftorthogonal=leftorthogonal,
         maxrank=truncationparameters.maxbonddimension,
-        abstol=truncationparameters.tolerance
+        abstol=abstol
     )
 
     problem.solution.sitetensors[bondindex] = reshape(TCI.left(luci), size(Π, 1), size(Π, 2), :)
@@ -212,58 +223,317 @@ function initializeproblem!(problem::ElementwiseProblem{ValueType,N}) where {Val
     nothing
 end
 
+function effectivetolerance(
+    problem::ElementwiseProblem,
+    truncationparameters::TruncationParameters
+)
+    if truncationparameters.scaletolerance && problem.maxsamplevalue > 0.0
+        return truncationparameters.tolerance * problem.maxsamplevalue
+    end
+    return truncationparameters.tolerance
+end
+
+function validateelementwise(
+    inputs,
+    initial_guess,
+    max_iters,
+    min_iters,
+    truncationparameters,
+    nsearchglobalpivot,
+    maxnglobalpivot,
+    tolmarginglobalsearch
+)
+    isempty(inputs) && throw(ArgumentError("`inputs` must contain at least one tensor train."))
+    nsites = length(first(inputs))
+    nsites > 0 || throw(ArgumentError("Input tensor trains must contain at least one site."))
+    all(length(input) == nsites for input in inputs) || throw(ArgumentError(
+        "All input tensor trains must have the same number of sites."
+    ))
+    allequal(TCI.sitedims.(inputs)) || throw(ArgumentError(
+        "All input tensor trains must have the same local dimensions."
+    ))
+    all(all(>(0), size(tensor)) for input in inputs for tensor in input) || throw(ArgumentError(
+        "All input tensor dimensions must be positive."
+    ))
+    all(size(first(input), 1) == 1 && size(last(input), ndims(last(input))) == 1 for input in inputs) || throw(
+        ArgumentError("Input tensor trains must have one-dimensional boundary bonds.")
+    )
+    max_iters >= 1 || throw(ArgumentError("`max_iters` must be at least 1."))
+    min_iters >= 1 || throw(ArgumentError("`min_iters` must be at least 1."))
+    min_iters <= max_iters || throw(ArgumentError("`min_iters` must not exceed `max_iters`."))
+    truncationparameters.maxbonddimension >= 1 || throw(ArgumentError(
+        "`maxbonddimension` must be at least 1."
+    ))
+    isfinite(truncationparameters.tolerance) && truncationparameters.tolerance >= 0 || throw(
+        ArgumentError("The truncation tolerance must be finite and non-negative.")
+    )
+    nsearchglobalpivot >= 0 || throw(ArgumentError("`nsearchglobalpivot` must be non-negative."))
+    maxnglobalpivot >= 0 || throw(ArgumentError("`maxnglobalpivot` must be non-negative."))
+    isfinite(tolmarginglobalsearch) && tolmarginglobalsearch >= 0 || throw(ArgumentError(
+        "`tolmarginglobalsearch` must be finite and non-negative."
+    ))
+
+    if !isnothing(initial_guess)
+        initial_guess isa typeof(first(inputs)) || throw(ArgumentError(
+            "The initial guess must have the same value type and tensor order as the inputs."
+        ))
+        length(initial_guess) == nsites || throw(ArgumentError(
+            "The initial guess must have the same number of sites as the inputs."
+        ))
+        TCI.sitedims(initial_guess) == TCI.sitedims(first(inputs)) || throw(ArgumentError(
+            "The initial guess must have the same local dimensions as the inputs."
+        ))
+        all(all(>(0), size(tensor)) for tensor in initial_guess) || throw(ArgumentError(
+            "All initial-guess tensor dimensions must be positive."
+        ))
+        size(first(initial_guess), 1) == 1 &&
+            size(last(initial_guess), ndims(last(initial_guess))) == 1 || throw(
+            ArgumentError("The initial guess must have one-dimensional boundary bonds.")
+        )
+        all(TCI.linkdims(initial_guess) .<= truncationparameters.maxbonddimension) || throw(
+            ArgumentError("The initial-guess bond dimensions must not exceed `maxbonddimension`.")
+        )
+    end
+    nothing
+end
+
+function elementwiseonesite(op, inputs)
+    result = TCI.TensorTrain([op.(getindex.(inputs, 1)...)])
+    return result, Int[], Float64[]
+end
+
+function framecontainsrow(frame::AbstractMatrix, row::AbstractVector)
+    return any(existing -> existing == row, eachrow(frame))
+end
+
+function framecontainscolumn(frame::AbstractMatrix, column::AbstractVector)
+    return any(existing -> existing == column, eachcol(frame))
+end
+
+function padsolutionbonds!(problem::ElementwiseProblem{ValueType,N}, growth) where {ValueType,N}
+    for (bondindex, amount) in enumerate(growth)
+        amount == 0 && continue
+        left = problem.solution.sitetensors[bondindex]
+        right = problem.solution.sitetensors[bondindex + 1]
+        problem.solution.sitetensors[bondindex] = cat(
+            left,
+            zeros(ValueType, size(left)[1:end-1]..., amount);
+            dims=N
+        )
+        problem.solution.sitetensors[bondindex + 1] = cat(
+            right,
+            zeros(ValueType, amount, size(right)[2:end]...);
+            dims=1
+        )
+    end
+    nothing
+end
+
+function addglobalpivots!(problem::ElementwiseProblem, pivots, maxbonddimension)
+    nbonds = length(problem) - 1
+    bounds = prodbonddimensions(TCI.sitedims(problem.solution))[2:end-1]
+    bonddimensions = TCI.linkdims(problem.solution)
+    growth = zeros(Int, nbonds)
+    nadded = 0
+
+    for pivot in pivots
+        length(pivot) == length(problem) || throw(ArgumentError(
+            "A global pivot must contain one index per tensor-train site."
+        ))
+        pivotadded = false
+        for bondindex in 1:nbonds
+            bonddimensions[bondindex] < min(bounds[bondindex], maxbonddimension) || continue
+            leftvalues = [
+                TCI.evaluateleft(cache, view(pivot, 1:bondindex))
+                for cache in problem.inputcaches
+            ]
+            rightvalues = [
+                TCI.evaluateright(cache, view(pivot, bondindex+1:length(pivot)))
+                for cache in problem.inputcaches
+            ]
+            represented = all(eachinputindex(problem)) do inputindex
+                framecontainsrow(problem.leftframes[inputindex, bondindex], leftvalues[inputindex]) &&
+                    framecontainscolumn(
+                        problem.rightframes[inputindex, bondindex + 1],
+                        rightvalues[inputindex]
+                    )
+            end
+            represented && continue
+
+            for inputindex in eachinputindex(problem)
+                problem.leftframes[inputindex, bondindex] = vcat(
+                    problem.leftframes[inputindex, bondindex],
+                    transpose(leftvalues[inputindex])
+                )
+                problem.rightframes[inputindex, bondindex + 1] = hcat(
+                    problem.rightframes[inputindex, bondindex + 1],
+                    rightvalues[inputindex]
+                )
+            end
+            bonddimensions[bondindex] += 1
+            growth[bondindex] += 1
+            pivotadded = true
+        end
+        nadded += pivotadded
+    end
+
+    padsolutionbonds!(problem, growth)
+    return nadded
+end
+
+# Reuses TensorCrossInterpolation.jl's floating-zone walk (`src/globalsearch.jl`)
+# so ACI and TCI apply the same global error search.
+function findglobalpivots(
+    op,
+    problem::ElementwiseProblem{ValueType},
+    abstol;
+    nsearchglobalpivot,
+    maxnglobalpivot,
+    tolmarginglobalsearch,
+    rng=Random.default_rng()
+) where {ValueType}
+    nsearchglobalpivot == 0 && return Vector{Vector{Int}}()
+    maxnglobalpivot == 0 && return Vector{Vector{Int}}()
+
+    flatdims = prod.(TCI.sitedims(problem.solution))
+    cachedsolution = TCI.TTCache(problem.solution, [[d] for d in flatdims])
+    threshold = Float64(abstol * tolmarginglobalsearch)
+    exactvalue = function(index)
+        value = op((cache(index) for cache in problem.inputcaches)...)
+        problem.maxsamplevalue = max(problem.maxsamplevalue, abs(value))
+        return value
+    end
+
+    candidates = Tuple{Vector{Int},Float64}[]
+    for _ in 1:nsearchglobalpivot
+        initial = [rand(rng, 1:d) for d in flatdims]
+        pivot, error = TCI._floatingzone(
+            cachedsolution,
+            exactvalue;
+            initp=initial,
+            earlystoptol=threshold,
+            nsweeps=100
+        )
+        if error > threshold && all(first(candidate) != pivot for candidate in candidates)
+            push!(candidates, (copy(pivot), error))
+        end
+    end
+    sort!(candidates; by=last, rev=true)
+    return first.(candidates[1:min(maxnglobalpivot, length(candidates))])
+end
+
+function ranksaturated(ranks, min_iters, maxbonddimension)
+    length(ranks) >= min_iters || return false
+    return all(last(ranks, min_iters) .>= maxbonddimension)
+end
+
+function elementwise(op::Function, inputs::Vector{<:TensorTrain}; kwargs...)
+    isempty(inputs) && throw(ArgumentError("`inputs` must contain at least one tensor train."))
+    throw(ArgumentError("All input tensor trains must have the same value type and tensor order."))
+end
+
 @doc raw"""
     elementwise(
         op::Function,
         inputs::Vector{<:TensorTrain{ValueType,N}};
-        max_iters::Integer=20, min_iters::Integer=2,
+        max_iters::Integer=20,
+        min_iters::Integer=2,
         truncationparameters::TruncationParameters=TruncationParameters(typemax(Int), 1e-12, true),
-        initial_guess::TensorTrain=randomtt(ValueType, TCI.sitedims(inputs[1]), min.([TCI.linkdims(X) for X in inputs]...))
+        initial_guess::Union{Nothing,TensorTrain}=nothing,
+        nsearchglobalpivot::Integer=5,
+        maxnglobalpivot::Integer=5,
+        tolmarginglobalsearch::Real=10.0
     ) where {ValueType,N}
-    
-Compute the elementwise application of `op` to the input tensor trains in `inputs` using an alternating optimization procedure. The function returns a tuple containing the resulting tensor train, a vector of bond dimensions at each iteration, and a vector of pivot errors at each iteration. For example, to compute a Hadamard product of two tensor trains `A` and `B`, you could call:
-```julia
-result, ranks, errors = elementwise(*, [A, B])
-``` 
+
+Compute the elementwise application of `op` to `inputs` with alternating cross
+interpolation. The return value is `(result, ranks, errors)`, where `ranks` and
+`errors` contain the maximum bond dimension and absolute pivot error after each
+completed sweep. A one-site input is evaluated exactly and returns empty
+histories.
+
+After every sweep, a global floating-zone search checks points outside the
+bond-local crosses. Pivots whose error exceeds the effective tolerance times
+`tolmarginglobalsearch` are injected before the next sweep. Convergence requires
+both stable ranks and no global pivots during the last `min_iters` sweeps. Set
+`nsearchglobalpivot=0` to disable this guard.
+
+The sweep also stops when the rank remains at
+`truncationparameters.maxbonddimension` for `min_iters` sweeps, because no new
+pivots can then be added.
 
 # Arguments
-- `op::Function`: The function to apply elementwise to the input tensor trains.
-- `inputs::Vector{<:TensorTrain{ValueType,N}}`: A vector of tensor trains to which the function will be applied. All tensor trains must have the same number of sites and the same local dimensions.
-- `max_iters::Integer=20`: The maximum number of iterations to perform.
-- `min_iters::Integer=2`: The minimum number of iterations to perform before checking for convergence.
-- `truncationparameters::TruncationParameters=TruncationParameters(typemax(Int), 1e-12, true)`: Parameters controlling the truncation of the tensor train during the optimization process.
-- `initial_guess::TensorTrain=randomtt(ValueType, TCI.sitedims(inputs[1]), min.([TCI.linkdims(X) for X in inputs]...))`: An initial guess for the resulting tensor train. If not provided, a random tensor train with appropriate dimensions will be generated.
+- `op`: Function applied elementwise to one value from each input tensor train.
+- `inputs`: Non-empty tensor trains with equal site counts and local dimensions.
+- `max_iters`: Maximum number of sweeps.
+- `min_iters`: Number of history entries required for convergence checks.
+- `truncationparameters`: Bond cap, tolerance, and tolerance-scaling mode.
+- `initial_guess`: Optional compatible initial tensor train. A random guess is used by default.
+- `nsearchglobalpivot`: Number of random starts per global search.
+- `maxnglobalpivot`: Maximum number of distinct global pivots injected per sweep.
+- `tolmarginglobalsearch`: Multiplier applied to the effective tolerance when accepting global pivots.
+
+# Throws
+Throws `ArgumentError` for empty or incompatible inputs, an incompatible initial
+guess, invalid iteration limits, invalid truncation parameters, or invalid
+global-search parameters.
+
+# Examples
+```julia
+import TensorCrossInterpolation as TCI
+A = TCI.TensorTrain([reshape([1.0, 2.0], 1, 2, 1)])
+B = TCI.TensorTrain([reshape([3.0, 4.0], 1, 2, 1)])
+result, ranks, errors = elementwise(*, [A, B])
+@assert result([1]) == 3.0
+@assert result([2]) == 8.0
+@assert isempty(ranks) && isempty(errors)
+```
 """
 function elementwise(
     op::Function,
     inputs::Vector{<:TensorTrain{ValueType,N}};
-    max_iters::Integer=20, min_iters::Integer=2,
+    max_iters::Integer=20,
+    min_iters::Integer=2,
     truncationparameters::TruncationParameters=TruncationParameters(typemax(Int), 1e-12, true),
-    initial_guess::TensorTrain=randomtt(ValueType, TCI.sitedims(inputs[1]), min.([TCI.linkdims(X) for X in inputs]...))
+    initial_guess::Union{Nothing,TensorTrain}=nothing,
+    nsearchglobalpivot::Integer=5,
+    maxnglobalpivot::Integer=5,
+    tolmarginglobalsearch::Real=10.0
 ) where {ValueType,N}
-    if any(length.(inputs) .!= length(inputs[1]))
-        throw(ArgumentError("All input tensor trains must have the same number of sites."))
-    end
-    if !allequal(TCI.sitedims, inputs)
-        throw(ArgumentError("All input tensor trains must have the same local dimensions."))
-    end
+    validateelementwise(
+        inputs,
+        initial_guess,
+        max_iters,
+        min_iters,
+        truncationparameters,
+        nsearchglobalpivot,
+        maxnglobalpivot,
+        tolmarginglobalsearch
+    )
+    length(first(inputs)) == 1 && return elementwiseonesite(op, inputs)
 
-    problem = ElementwiseProblem(inputs, initial_guess)
-    @debug "Frame sizes" size.(problem.rightframes[1, :]) size.(problem.rightframes[2, :])
-
+    guess = if isnothing(initial_guess)
+        randomtt(
+            ValueType,
+            TCI.sitedims(first(inputs)),
+            min.(
+                min.([TCI.linkdims(input) for input in inputs]...),
+                truncationparameters.maxbonddimension
+            )
+        )
+    else
+        initial_guess
+    end
+    problem = ElementwiseProblem(inputs, guess)
     ranks = Int[]
     errors = Float64[]
+    nglobalpivots = Int[]
+    globalpivots = Vector{Vector{Int}}()
 
     function convergencecriterion(iteration)
-        if iteration < min_iters
-            return false
-        elseif errors[iteration] > truncationparameters.tolerance
-            return false
-        elseif any(last(ranks, min_iters) .> ranks[iteration-min_iters+1])
-            return false
-        else
-            return true
-        end
+        iteration >= min_iters || return false
+        errors[iteration] <= effectivetolerance(problem, truncationparameters) || return false
+        any(last(ranks, min_iters) .> ranks[iteration-min_iters+1]) && return false
+        return all(last(nglobalpivots, min_iters) .== 0)
     end
 
     for iteration in 1:max_iters
@@ -277,9 +547,31 @@ function elementwise(
         push!(ranks, TCI.rank(problem.solution))
         push!(errors, maximum(problem.pivoterrors))
 
-        if convergencecriterion(iteration)
-            break
+        globalpivots = if last(ranks) < truncationparameters.maxbonddimension
+            findglobalpivots(
+                op,
+                problem,
+                effectivetolerance(problem, truncationparameters);
+                nsearchglobalpivot,
+                maxnglobalpivot,
+                tolmarginglobalsearch
+            )
+        else
+            Vector{Vector{Int}}()
+        end
+        addglobalpivots!(problem, globalpivots, truncationparameters.maxbonddimension)
+        push!(nglobalpivots, length(globalpivots))
+
+        convergencecriterion(iteration) && break
+        ranksaturated(ranks, min_iters, truncationparameters.maxbonddimension) && break
+    end
+
+    # Absorb pivots injected by the final allowed iteration before returning.
+    if !isempty(globalpivots)
+        for bondindex in eachbondindex(problem)
+            localupdate!(op, problem, bondindex; leftorthogonal=true, truncationparameters)
         end
     end
+
     return problem.solution, ranks, errors
 end
