@@ -274,6 +274,9 @@ function validateelementwise(
     ))
 
     if !isnothing(initial_guess)
+        initial_guess isa typeof(first(inputs)) || throw(ArgumentError(
+            "The initial guess must have the same value type and tensor order as the inputs."
+        ))
         length(initial_guess) == nsites || throw(ArgumentError(
             "The initial guess must have the same number of sites as the inputs."
         ))

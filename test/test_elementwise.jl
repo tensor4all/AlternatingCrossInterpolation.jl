@@ -82,6 +82,7 @@ end
     different_site = TCI.TensorTrain([ones(1, 3, 1), ones(1, 2, 1)])
     emptytt = TCI.TensorTrain{Float64,3}(Array{Float64,3}[])
     large_guess = ACI.randomtt(Float64, fill([2], 2), [2])
+    complex_guess = TCI.TensorTrain([ones(ComplexF64, 1, 2, 1) for _ in 1:2])
 
     @test_throws ArgumentError ACI.elementwise(identity, TCI.TensorTrain[])
     @test_throws ArgumentError ACI.elementwise(identity, [emptytt])
@@ -106,6 +107,7 @@ end
         truncationparameters=ACI.TruncationParameters(1, 1e-12, false),
         initial_guess=large_guess
     )
+    @test_throws ArgumentError ACI.elementwise(identity, [A]; initial_guess=complex_guess)
     @test_throws ArgumentError ACI.elementwise(identity, [A]; nsearchglobalpivot=-1)
     @test_throws ArgumentError ACI.elementwise(identity, [A]; maxnglobalpivot=-1)
     @test_throws ArgumentError ACI.elementwise(identity, [A]; tolmarginglobalsearch=Inf)

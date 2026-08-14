@@ -23,8 +23,8 @@ Implemented issue [#6](https://github.com/tensor4all/AlternatingCrossInterpolati
 
 ## Verification
 
-- `julia --project=. -e 'using Pkg; Pkg.test()'`: 57/57 tests passed on Julia 1.12.5 with TensorCrossInterpolation 0.9.19.
-- `julia +1.10 --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'`: 57/57 tests passed on Julia 1.10.11.
+- `julia --project=. -e 'using Pkg; Pkg.test()'`: 58/58 tests passed on Julia 1.12.5 with TensorCrossInterpolation 0.9.19.
+- `julia +1.10 --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'`: 58/58 tests passed on Julia 1.10.11.
 - Documenter doctests: 1/1 passed.
 - Added value-based regressions for one-site evaluation, separated-peak recovery, binding bond-cap termination, input validation, and scaled/absolute tolerance behavior.
 
