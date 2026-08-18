@@ -107,7 +107,19 @@ function pitensor(
     )
 end
 
-function updatemaxsample!(problem::ElementwiseProblem{ValueType,N}, Π::AbstractArray{ValueType}) where {ValueType,N}
+function updatemaxsample!(
+    problem::ElementwiseProblem{ValueType,N},
+    Π::AbstractMatrix{ValueType},
+    bw::Function
+    ) where {ValueType,N}
+    maxΠ_bw = 0.0
+    for I in CartesianIndices(Π)
+        maxΠ_bw = max(maxΠ_bw, abs(bw(I[1],I[2]) * Π[I]))
+    end
+    problem.maxsamplevalue = max(problem.maxsamplevalue, maxΠ_bw)
+end
+
+function updatemaxsample!(problem::ElementwiseProblem{ValueType,N}, Π::AbstractMatrix{ValueType},::Nothing) where {ValueType,N}
     problem.maxsamplevalue = max(problem.maxsamplevalue, maximum(abs, Π))
 end
 
@@ -124,10 +136,6 @@ function localupdate!(
     @debug "Local update" bondindex leftorthogonal
     Πs = [pitensor(problem, k, bondindex) for k in eachinputindex(problem)]
     Π = op.(Πs...)
-
-    if truncationparameters.scaletolerance
-        updatemaxsample!(problem, Π)
-    end
 
     bw = nothing
     if errorweighting.is_nontrivial
@@ -149,13 +157,18 @@ function localupdate!(
         end
     end
 
+    Πmat = reshape(Π, prod(size(Π)[1:2]), prod(size(Π)[3:4]))
+    if truncationparameters.scaletolerance
+        updatemaxsample!(problem, Πmat, bw)
+    end
+
     abstol = if truncationparameters.scaletolerance
         truncationparameters.tolerance * problem.maxsamplevalue
     else
         truncationparameters.tolerance
     end
     luci = TCI.MatrixLUCI(
-        reshape(Π, prod(size(Π)[1:2]), prod(size(Π)[3:4]));
+        Πmat;
         bondweighting=bw,
         leftorthogonal=leftorthogonal,
         maxrank=truncationparameters.maxbonddimension,
