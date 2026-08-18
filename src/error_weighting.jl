@@ -21,7 +21,7 @@ struct ErrorWeighting
 end
 
 function bondweighting(errorweighting::ErrorWeighting, bondindex::Integer)
-    errorweighting.pt.bond_act==bondindex || throw(ArgumentError("bondindex must be the current active bond $(errorweighting.pt.bond_act), but is $bondindex"))
+    errorweighting.pt.bond_act==bondindex || throw(ArgumentError("bondindex must be the current active bond $bondindex, but is $(errorweighting.pt.bond_act)"))
     function _bw(i,j)
         errorweighting.eval_cache[1:bondindex] .= errorweighting.pt.Icombined_act[i]
         errorweighting.eval_cache[bondindex+1:end] .= errorweighting.pt.Jcombined_act[j]
