@@ -41,31 +41,34 @@ end
     R = 20
 
     for normalize_environment in (true, false)
-        @testset "normalize_environment = $normalize_environment" begin
-        f(x) = exp(-x / 100) * cos((x/20)^2)
+        for weighting in (nothing, q -> 1.0)
+            @testset "normalize_environment = $normalize_environment, with_weighting = $(!isnothing(weighting))" begin
+            f(x) = exp(-x / 100) * cos((x/20)^2)
 
-        qg = QG.DiscretizedGrid{1}(R, (0.,), (300.,), unfoldingscheme=:interleaved)
-        Fqtt, _, _ = TCI.crossinterpolate2(
-            Float64,
-            q -> f(QG.quantics_to_origcoord(qg, q)),
-            QG.localdimensions(qg),
-            tolerance=1e-12
-        )
+            qg = QG.DiscretizedGrid{1}(R, (0.,), (300.,), unfoldingscheme=:interleaved)
+            Fqtt, _, _ = TCI.crossinterpolate2(
+                Float64,
+                q -> f(QG.quantics_to_origcoord(qg, q)),
+                QG.localdimensions(qg),
+                tolerance=1e-12
+            )
 
-        Ftt = TCI.tensortrain(Fqtt)
-        ncopies = 20
-        fp20, = ACI.elementwise(
-            (x...) -> prod(x), fill(Ftt, ncopies);
-            environment_mode=true,
-            normalize_environment=normalize_environment,
-        )
+            Ftt = TCI.tensortrain(Fqtt)
+            ncopies = 20
+            fp20, = ACI.elementwise(
+                (x...) -> prod(x), fill(Ftt, ncopies);
+                environment_mode=true,
+                weighting=weighting,
+                normalize_environment=normalize_environment,
+            )
 
-        xindices = Int.(round.(range(1, stop=2^R, length=64)))
-        xquantics = [QG.grididx_to_quantics(qg, (i,)) for i in xindices]
-        xgrid = [QG.grididx_to_origcoord(qg, (i,))[1] for i in xindices]
-        approx = [fp20(q) for q in xquantics]
-        exact = [f(x)^ncopies for x in xgrid]
-        @test maximum(abs, approx .- exact) / maximum(abs, exact) < 1e-8
+            xindices = Int.(round.(range(1, stop=2^R, length=64)))
+            xquantics = [QG.grididx_to_quantics(qg, (i,)) for i in xindices]
+            xgrid = [QG.grididx_to_origcoord(qg, (i,))[1] for i in xindices]
+            approx = [fp20(q) for q in xquantics]
+            exact = [f(x)^ncopies for x in xgrid]
+            @test maximum(abs, approx .- exact) / maximum(abs, exact) < 1e-8
+            end
         end
     end
 end

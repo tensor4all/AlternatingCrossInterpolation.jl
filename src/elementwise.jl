@@ -153,7 +153,8 @@ function localupdate!(
         if isnothing(bw)
             bw = (i, j) -> abs(L[cl[i][1]] * R[cr[j][2]]) / (ml * mr)
         else
-            bw = (i, j) -> abs(bw(i, j) * L[cl[i][1]] * R[cr[j][2]]) / (ml * mr)
+            bw_error = bw
+            bw = (i, j) -> abs(bw_error(i, j) * L[cl[i][1]] * R[cr[j][2]]) / (ml * mr)
         end
     end
 
