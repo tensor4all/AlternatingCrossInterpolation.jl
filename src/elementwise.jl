@@ -16,7 +16,7 @@ mutable struct ElementwiseProblem{ValueType,N}
         Nsites = length(first(inputs))
 
         @assert all(length.(inputs) .== Nsites) "All input tensor trains must have the same number of sites."
-        @assert allequal(TCI.sitedims, inputs) "All input tensor trains must have the same local dimensions."
+        @assert allequal(TCI.sitedims(tt) for tt in inputs) "All input tensor trains must have the same local dimensions."
 
         problem = new{ValueType,N}(
             inputs,
@@ -260,7 +260,7 @@ function elementwise(
     if any(length.(inputs) .!= length(inputs[1]))
         throw(ArgumentError("All input tensor trains must have the same number of sites."))
     end
-    if !allequal(TCI.sitedims, inputs)
+    if !allequal(TCI.sitedims(tt) for tt in inputs)
         throw(ArgumentError("All input tensor trains must have the same local dimensions."))
     end
 
