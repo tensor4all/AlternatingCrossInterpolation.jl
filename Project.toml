@@ -1,7 +1,7 @@
 name = "AlternatingCrossInterpolation"
 uuid = "edb033b7-a75d-417d-a8cf-848b73ef5de9"
-version = "0.1.0"
 authors = ["Marc Ritter <mritter@flatironinstitute.org> and contributors"]
+version = "0.1.0"
 
 [deps]
 OffsetArrays = "6fe1bfb0-de20-5000-8ca7-80f57d26f881"

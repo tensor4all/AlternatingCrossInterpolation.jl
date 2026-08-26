@@ -6,6 +6,7 @@ mutable struct ElementwiseProblem{ValueType,N}
     rightframes::OffsetMatrix{Matrix{ValueType},Matrix{Matrix{ValueType}}}
 
     pivoterrors::Vector{Float64}
+    maxsamplevalue::Float64
 
     function ElementwiseProblem{ValueType,N}(
         inputs::Vector{TensorTrain{ValueType,N}},
@@ -15,14 +16,15 @@ mutable struct ElementwiseProblem{ValueType,N}
         Nsites = length(first(inputs))
 
         @assert all(length.(inputs) .== Nsites) "All input tensor trains must have the same number of sites."
-        @assert allequal(TCI.sitedims, inputs) "All input tensor trains must have the same local dimensions."
+        @assert allequal(TCI.sitedims(tt) for tt in inputs) "All input tensor trains must have the same local dimensions."
 
         problem = new{ValueType,N}(
             inputs,
             deepcopy(initial_guess),
             Origin(1, 0)(Matrix{Matrix{ValueType}}(undef, Ninputs, Nsites + 1)),
             Origin(1, 1)(Matrix{Matrix{ValueType}}(undef, Ninputs, Nsites + 1)),
-            zeros(Nsites)
+            zeros(Nsites),
+            0.0 # maxsamplevalue
         )
 
         problem.leftframes[:, 0] .= Ref(ones(ValueType, 1, 1))
@@ -149,6 +151,10 @@ function pitensor(
     )
 end
 
+function updatemaxsample!(problem::ElementwiseProblem{ValueType,N}, Π::AbstractArray{ValueType}) where {ValueType,N}
+    problem.maxsamplevalue = max(problem.maxsamplevalue, maximum(abs, Π))
+end
+
 function localupdate!(
     op::Function,
     problem::ElementwiseProblem{ValueType,N},
@@ -160,11 +166,21 @@ function localupdate!(
     Πs = [pitensor(problem, k, bondindex) for k in eachinputindex(problem)]
     Π = op.(Πs...)
 
+    if truncationparameters.scaletolerance
+        updatemaxsample!(problem, Π)
+    end
+    # only scale tolerance if maxsamplevalue is not zero
+    abstol = if truncationparameters.scaletolerance && (problem.maxsamplevalue > 0.0)
+        truncationparameters.tolerance * problem.maxsamplevalue
+    else
+        truncationparameters.tolerance
+    end
+
     luci = TCI.MatrixLUCI(
         reshape(Π, prod(size(Π)[1:2]), prod(size(Π)[3:4]));
         leftorthogonal=leftorthogonal,
         maxrank=truncationparameters.maxbonddimension,
-        abstol=truncationparameters.tolerance
+        abstol=abstol
     )
 
     problem.solution.sitetensors[bondindex] = reshape(TCI.left(luci), size(Π, 1), size(Π, 2), :)
@@ -244,7 +260,7 @@ function elementwise(
     if any(length.(inputs) .!= length(inputs[1]))
         throw(ArgumentError("All input tensor trains must have the same number of sites."))
     end
-    if !allequal(TCI.sitedims, inputs)
+    if !allequal(TCI.sitedims(tt) for tt in inputs)
         throw(ArgumentError("All input tensor trains must have the same local dimensions."))
     end
 
@@ -255,9 +271,14 @@ function elementwise(
     errors = Float64[]
 
     function convergencecriterion(iteration)
+        tol = if truncationparameters.scaletolerance
+            truncationparameters.tolerance * problem.maxsamplevalue
+        else
+            truncationparameters.tolerance
+        end
         if iteration < min_iters
             return false
-        elseif errors[iteration] > truncationparameters.tolerance
+        elseif errors[iteration] > tol
             return false
         elseif any(last(ranks, min_iters) .> ranks[iteration-min_iters+1])
             return false
