@@ -246,6 +246,13 @@ result, ranks, errors = elementwise(*, [A, B])
 - `min_iters::Integer=2`: The minimum number of iterations to perform before checking for convergence.
 - `truncationparameters::TruncationParameters=TruncationParameters(typemax(Int), 1e-12, true)`: Parameters controlling the truncation of the tensor train during the optimization process.
 - `initial_guess::TensorTrain=randomtt(ValueType, TCI.sitedims(inputs[1]), min.([TCI.linkdims(X) for X in inputs]...))`: An initial guess for the resulting tensor train. If not provided, a random tensor train with appropriate dimensions will be generated.
+- `useglobalpivots::Bool=false`: If `true`, search for global residual pivots after each full local sweep and enrich the current solution with rank-1 delta tensor trains at the detected pivots. Disabled by default for backwards compatibility.
+- `globalpivotfinder::Union{Nothing,TCI.AbstractGlobalPivotFinder}=nothing`: Optional TCI-compatible global pivot finder. If `nothing`, `TCI.DefaultGlobalPivotFinder` is constructed from `nsearchglobalpivot`, `maxnglobalpivot`, and `tolmarginglobalsearch`.
+- `nsearchglobalpivot::Int=5`: Number of random starting points for the default global pivot finder.
+- `maxnglobalpivot::Int=5`: Maximum number of global pivots enriched per sweep.
+- `tolmarginglobalsearch::Float64=10.0`: The default finder returns pivots whose residual is larger than `tolmarginglobalsearch * abstol`.
+
+Global pivot enrichment currently supports scalar site dimensions (`TensorTrain{T,3}`) only.
 """
 function elementwise(
     op::Function,
@@ -256,6 +263,11 @@ function elementwise(
     weighting::Union{Function, Nothing}=nothing,
     environment_mode::Bool=false,
     normalize_environment::Bool=false, # only relevant if environment_mode is true
+    useglobalpivots::Bool=false,
+    globalpivotfinder::Union{Nothing,TCI.AbstractGlobalPivotFinder}=nothing,
+    nsearchglobalpivot::Int=5,
+    maxnglobalpivot::Int=5,
+    tolmarginglobalsearch::Float64=10.0,
 ) where {ValueType,N}
     if any(length.(inputs) .!= length(inputs[1]))
         throw(ArgumentError("All input tensor trains must have the same number of sites."))
@@ -263,6 +275,14 @@ function elementwise(
     if !allequal(TCI.sitedims, inputs)
         throw(ArgumentError("All input tensor trains must have the same local dimensions."))
     end
+    if useglobalpivots && N != 3
+        throw(ArgumentError("Global pivot enrichment currently supports only TensorTrain{T,3} inputs."))
+    end
+    if useglobalpivots && any(length.(TCI.sitedims(inputs[1])) .!= 1)
+        throw(ArgumentError("Global pivot enrichment currently supports only scalar site dimensions."))
+    end
+
+    target = elementwise_target(op, inputs)
 
     problem = ElementwiseProblem{ValueType,N}(inputs, initial_guess)
     @debug "Frame sizes" size.(problem.rightframes[1, :]) size.(problem.rightframes[2, :])
@@ -271,8 +291,9 @@ function elementwise(
 
     ranks = Int[]
     errors = Float64[]
+    next_forward = true
 
-    function convergencecriterion(iteration)
+    function convergencecriterion(iteration, nglobalpivots::Int)
         tol = if truncationparameters.scaletolerance
             truncationparameters.tolerance * problem.maxsamplevalue
         else
@@ -282,6 +303,8 @@ function elementwise(
             return false
         elseif errors[iteration] > tol
             return false
+        elseif useglobalpivots && nglobalpivots > 0
+            return false
         elseif any(last(ranks, min_iters) .> ranks[iteration-min_iters+1])
             return false
         else
@@ -290,7 +313,8 @@ function elementwise(
     end
 
     for iteration in 1:max_iters
-        forward = isodd(iteration)
+        forward = next_forward
+        next_forward = !forward
         for bondindex in sweep(eachbondindex(problem); forward)
             localupdate!(
                 op,
@@ -305,10 +329,42 @@ function elementwise(
 
         @debug "Sweep $iteration, $(forward ? "forward" : "backward")" bonddimensions = "$(TCI.linkdims(problem.solution))" pivoterrors = "$(problem.pivoterrors)"
 
-        push!(ranks, TCI.rank(problem.solution))
-        push!(errors, maximum(problem.pivoterrors))
+        localerror = maximum(problem.pivoterrors)
+        nglobalpivots = 0
 
-        if convergencecriterion(iteration)
+        if useglobalpivots
+            abstol = if truncationparameters.scaletolerance
+                truncationparameters.tolerance * problem.maxsamplevalue
+            else
+                truncationparameters.tolerance
+            end
+
+            globalpivots = findglobalpivots(
+                problem.solution,
+                target,
+                abstol;
+                globalpivotfinder,
+                nsearchglobalpivot,
+                maxnglobalpivot,
+                tolmarginglobalsearch,
+                maxsamplevalue=problem.maxsamplevalue,
+                verbosity=0,
+            )
+
+            enriched, nglobalpivots, globalmaxsample = spikeenrich(problem.solution, target, globalpivots)
+            if nglobalpivots > 0
+                problem.solution = enriched
+                problem.maxsamplevalue = max(problem.maxsamplevalue, globalmaxsample)
+                errorweighting = ErrorWeighting(problem, weighting, !isnothing(weighting))
+                initializeproblem!(problem)
+                next_forward = true
+            end
+        end
+
+        push!(ranks, TCI.rank(problem.solution))
+        push!(errors, localerror)
+
+        if convergencecriterion(iteration, nglobalpivots)
             break
         end
     end

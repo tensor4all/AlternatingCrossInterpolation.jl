@@ -17,6 +17,7 @@ include("frame.jl")
 include("elementwise_problem.jl")
 include("pivottracker.jl")
 include("error_weighting.jl")
+include("globalpivots.jl")
 include("elementwise.jl")
 
 end

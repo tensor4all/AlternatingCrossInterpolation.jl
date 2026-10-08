@@ -19,4 +19,5 @@ using LinearAlgebra
     include("test_elementwise.jl")
     include("test_pivottracker.jl")
     include("test_error_weighting.jl")
+    include("test_globalpivots.jl")
 end
