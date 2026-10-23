@@ -34,6 +34,16 @@ function updatepivots!(errorweighting::ErrorWeighting, bondindex::Integer, luci:
     updatepivots!(errorweighting.pt, bondindex, luci)
 end
 
+function updatepivots!(
+    errorweighting::ErrorWeighting,
+    bondindex::Integer,
+    rowindices::AbstractVector{<:Integer},
+    colindices::AbstractVector{<:Integer},
+)
+    updatepivots!(errorweighting.pt, bondindex, rowindices, colindices)
+    return nothing
+end
+
 function updatecombinedIJ!(errorweighting::ErrorWeighting, bondindex::Integer)
     updatecombinedIJ!(errorweighting.pt, bondindex)
     return nothing

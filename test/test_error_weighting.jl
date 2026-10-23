@@ -51,3 +51,40 @@ end
 
     @test abs(tt_weighted([2, 2, 2])) < abs(tt_unweighted([2, 2, 2]))
 end
+
+@testset "zero Pi fallback updates weighting pivot tracker" begin
+    R = 3
+    sitedims = fill([2], R)
+    Z = TCI.TensorTrain([zeros(Float64, 1, d..., 1) for d in sitedims])
+    problem = ACI.ElementwiseProblem([Z], ACI.randomtt(Float64, sitedims, 2))
+    errorweighting = ACI.ErrorWeighting(problem, _ -> 1.0, true)
+    trunc = ACI.TruncationParameters(10, 1e-12, true)
+
+    ACI.localupdate!(
+        identity,
+        problem,
+        1;
+        leftorthogonal=true,
+        truncationparameters=trunc,
+        errorweighting=errorweighting,
+        environment_mode=false,
+        normalize_environment=false,
+    )
+
+    @test errorweighting.pt.Iset[2] == [errorweighting.pt.Icombined_act[1]]
+    @test errorweighting.pt.Jset[1] == [errorweighting.pt.Jcombined_act[1]]
+
+    ACI.localupdate!(
+        identity,
+        problem,
+        2;
+        leftorthogonal=true,
+        truncationparameters=trunc,
+        errorweighting=errorweighting,
+        environment_mode=false,
+        normalize_environment=false,
+    )
+
+    @test errorweighting.pt.Iset[3] == [errorweighting.pt.Icombined_act[1]]
+    @test errorweighting.pt.Jset[2] == [errorweighting.pt.Jcombined_act[1]]
+end

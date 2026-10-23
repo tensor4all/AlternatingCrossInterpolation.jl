@@ -55,18 +55,27 @@ function updatecombinedIJ!(pt::PivotTracker, bondindex::Integer)
     return nothing
 end
 
-function updatepivots!(pt::PivotTracker, b::Integer, luci::TCI.MatrixLUCI)
-    Icombined = if b==pt.bond_act
+function updatepivots!(
+    pt::PivotTracker,
+    b::Integer,
+    rowindices::AbstractVector{<:Integer},
+    colindices::AbstractVector{<:Integer},
+)
+    Icombined = if b == pt.bond_act
         pt.Icombined_act
     else
         TCI.kronecker(pt.Iset[b], pt.localdims[b])
     end
-    Jcombined = if b==pt.bond_act
+    Jcombined = if b == pt.bond_act
         pt.Jcombined_act
     else
         TCI.kronecker(pt.localdims[b+1], pt.Jset[b+1])
     end
-    pt.Iset[b+1] = Icombined[TCI.rowindices(luci)]
-    pt.Jset[b] = Jcombined[TCI.colindices(luci)]
+    pt.Iset[b+1] = Icombined[rowindices]
+    pt.Jset[b] = Jcombined[colindices]
     return nothing
+end
+
+function updatepivots!(pt::PivotTracker, b::Integer, luci::TCI.MatrixLUCI)
+    return updatepivots!(pt, b, TCI.rowindices(luci), TCI.colindices(luci))
 end

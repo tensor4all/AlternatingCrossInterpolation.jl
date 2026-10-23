@@ -137,6 +137,36 @@ function localupdate!(
     Πs = [pitensor(problem, k, bondindex) for k in eachinputindex(problem)]
     Π = op.(Πs...)
 
+    function _update_dummy_pivots!()
+        if errorweighting.is_nontrivial
+            updatecombinedIJ!(errorweighting, bondindex)
+            updatepivots!(errorweighting, bondindex, [1], [1])
+        end
+        return nothing
+    end
+
+    function _apply_rank1_zero_bond!()
+        # Dummy pivot index 1 keeps frames and weighted pivot sets defined for later bonds.
+        VT = ValueType
+        problem.solution.sitetensors[bondindex] =
+            zeros(VT, size(Π, 1), size(Π, 2), 1)
+        problem.solution.sitetensors[bondindex + 1] =
+            zeros(VT, 1, size(Π, 3), size(Π, 4))
+        _update_dummy_pivots!()
+        if leftorthogonal
+            updateleftframes!(problem, bondindex, [1])
+        else
+            updaterightframes!(problem, bondindex + 1, [1])
+        end
+        problem.pivoterrors[bondindex] = 0.0
+        return nothing
+    end
+
+    # All-zero local tensors: do not evaluate environment weights or force LU.
+    if maximum(abs, Π) == 0
+        return _apply_rank1_zero_bond!()
+    end
+
     bw = nothing
     if errorweighting.is_nontrivial
         updatecombinedIJ!(errorweighting, bondindex)
@@ -169,26 +199,6 @@ function localupdate!(
         truncationparameters.tolerance
     end
 
-    function _apply_rank1_zero_bond!()
-        # Dummy pivot index 1 keeps left/right frames defined for later bonds.
-        VT = ValueType
-        problem.solution.sitetensors[bondindex] =
-            zeros(VT, size(Π, 1), size(Π, 2), 1)
-        problem.solution.sitetensors[bondindex + 1] =
-            zeros(VT, 1, size(Π, 3), size(Π, 4))
-        if leftorthogonal
-            updateleftframes!(problem, bondindex, [1])
-        else
-            updaterightframes!(problem, bondindex + 1, [1])
-        end
-        problem.pivoterrors[bondindex] = 0.0
-        return nothing
-    end
-
-    # All-zero local tensors: do not force LU (would divide by a zero pivot).
-    if maximum(abs, Π) == 0
-        return _apply_rank1_zero_bond!()
-    end
     luci = TCI.MatrixLUCI(
         Πmat;
         bondweighting=bw,
@@ -197,12 +207,12 @@ function localupdate!(
         abstol=abstol
     )
 
-    if errorweighting.is_nontrivial
-        updatepivots!(errorweighting, bondindex, luci)
-    end
-
     if TCI.npivots(luci) == 0
         return _apply_rank1_zero_bond!()
+    end
+
+    if errorweighting.is_nontrivial
+        updatepivots!(errorweighting, bondindex, luci)
     end
 
     problem.solution.sitetensors[bondindex] = reshape(TCI.left(luci), size(Π, 1), size(Π, 2), :)

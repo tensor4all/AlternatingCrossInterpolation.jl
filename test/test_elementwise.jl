@@ -37,6 +37,68 @@ function fulltensor(tt::TCI.AbstractTensorTrain)
     end
 end
 
+function zero_elementwise_tt(::Type{T}, sitedims) where {T}
+    return TCI.TensorTrain([zeros(T, 1, d..., 1) for d in sitedims])
+end
+
+@testset "ElementwiseProblem: zero Pi tensors" begin
+    R = 4
+    sitedims = fill([2], R)
+    Z = zero_elementwise_tt(Float64, sitedims)
+    guess = ACI.randomtt(Float64, sitedims, 2)
+
+    cases = (
+        (false, false, nothing),
+        (true, false, nothing),
+        (true, true, nothing),
+        (true, true, _ -> 1.0),
+    )
+
+    for (environment_mode, normalize_environment, weighting) in cases
+        @testset "environment_mode=$environment_mode normalize_environment=$normalize_environment weighting=$(!isnothing(weighting))" begin
+            Ztt, ranks, errors = ACI.elementwise(
+                identity, [Z];
+                initial_guess=deepcopy(guess),
+                truncationparameters=ACI.TruncationParameters(10, 1e-12, true),
+                max_iters=2,
+                min_iters=2,
+                environment_mode=environment_mode,
+                normalize_environment=normalize_environment,
+                weighting=weighting,
+            )
+
+            @test all(iszero, fulltensor(Ztt))
+            @test TCI.rank(Ztt) == 1
+            @test all(iszero, errors)
+        end
+    end
+end
+
+@testset "localupdate!: zero Pi skips normalized environment maxsample update" begin
+    R = 4
+    sitedims = fill([2], R)
+    Z = zero_elementwise_tt(Float64, sitedims)
+    problem = ACI.ElementwiseProblem([Z], ACI.randomtt(Float64, sitedims, 2))
+    errorweighting = ACI.ErrorWeighting(problem, nothing, false)
+    trunc = ACI.TruncationParameters(10, 1e-12, true)
+
+    for bondindex in ACI.eachbondindex(problem)
+        ACI.localupdate!(
+            identity,
+            problem,
+            bondindex;
+            leftorthogonal=true,
+            truncationparameters=trunc,
+            errorweighting=errorweighting,
+            environment_mode=true,
+            normalize_environment=true,
+        )
+
+        @test problem.maxsamplevalue == 0.0
+        @test isfinite(problem.maxsamplevalue)
+    end
+end
+
 @testset "ElementwiseProblem: environments" begin
     R = 20
 
