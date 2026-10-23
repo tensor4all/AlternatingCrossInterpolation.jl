@@ -3,6 +3,7 @@ module AlternatingCrossInterpolation
 import TensorCrossInterpolation as TCI
 import TensorCrossInterpolation: TensorTrain
 import OffsetArrays: Origin, OffsetMatrix
+import Random
 import Base: iterate
 
 export elementwise
