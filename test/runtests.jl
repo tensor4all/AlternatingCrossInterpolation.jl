@@ -12,7 +12,7 @@ using LinearAlgebra
         Aqua.test_all(AlternatingCrossInterpolation)
     end
     @testset "Code linting (JET.jl)" begin
-        JET.test_package(AlternatingCrossInterpolation; target_defined_modules = true)
+        JET.test_package(AlternatingCrossInterpolation; target_modules=[AlternatingCrossInterpolation])
     end
 
     include("test_frame.jl")
