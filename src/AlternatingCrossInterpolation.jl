@@ -4,6 +4,7 @@ import TensorCrossInterpolation as TCI
 import TensorCrossInterpolation: TensorTrain
 import OffsetArrays: Origin, OffsetMatrix
 import Random
+import LinearAlgebra: mul!
 import Base: iterate
 
 export elementwise

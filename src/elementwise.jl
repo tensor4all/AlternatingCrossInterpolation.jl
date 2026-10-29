@@ -9,6 +9,12 @@ mutable struct ElementwiseProblem{ValueType,N}
     maxsamplevalue::Float64
     inputcaches::Vector{TCI.TTCache{ValueType}}
 
+    # Workspaces for the matrix products of the frame updates and of pitensor: written, read
+    # and dropped within one call, so one buffer of each kind serves every input in turn.
+    framebuffer::Vector{ValueType}
+    leftbuffer::Vector{ValueType}
+    rightbuffer::Vector{ValueType}
+
     function ElementwiseProblem{ValueType,N}(
         inputs::Vector{TensorTrain{ValueType,N}},
         initial_guess::TensorTrain{ValueType,N}
@@ -24,7 +30,7 @@ mutable struct ElementwiseProblem{ValueType,N}
             Origin(1, 1)(Matrix{Matrix{ValueType}}(undef, Ninputs, Nsites + 1)),
             zeros(Nsites),
             0.0,
-            [TCI.TTCache(input, flatdims) for input in inputs]
+            [TCI.TTCache(input, flatdims) for input in inputs], ValueType[], ValueType[], ValueType[]
         )
 
         problem.leftframes[:, 0] .= Ref(ones(ValueType, 1, 1))
@@ -60,14 +66,31 @@ end
 
 Base.eachindex(problem::ElementwiseProblem{ValueType,N}) where {ValueType,N} = eachsiteindex(problem)
 
+"""
+    buffermatrix(buffer, m, n)
+
+An `m x n` matrix over the first `m * n` elements of `buffer`, which grows when it is too short.
+Its contents are valid until the next call on the same buffer.
+"""
+function buffermatrix(buffer::Vector, m::Integer, n::Integer)
+    length(buffer) < m * n && resize!(buffer, m * n)
+    return reshape(view(buffer, 1:m*n), m, n)
+end
+
 function updateleftframe(
     leftframe::AbstractMatrix{ValueType},
     sitetensor::AbstractArray{ValueType,3},
-    Iset::AbstractVector{<:Integer}
+    Iset::AbstractVector{<:Integer},
+    buffer::Vector{ValueType}
 ) where {ValueType}
-    newframe = reshape(contract(leftframe, [2], sitetensor, [1]), :, size(sitetensor)[end])
-    return newframe[Iset, :]
+    newframe = buffermatrix(buffer, size(leftframe, 1), size(sitetensor, 2) * size(sitetensor, 3))
+    mul!(newframe, leftframe, reshape(sitetensor, size(sitetensor, 1), :))
+    return reshape(newframe, :, size(sitetensor, 3))[Iset, :]
 end
+
+updateleftframe(leftframe::AbstractMatrix{ValueType}, sitetensor::AbstractArray{ValueType,3},
+                Iset::AbstractVector{<:Integer}) where {ValueType} =
+    updateleftframe(leftframe, sitetensor, Iset, ValueType[])
 
 function updateleftframe!(
     problem::ElementwiseProblem{ValueType,N},
@@ -77,7 +100,8 @@ function updateleftframe!(
     problem.leftframes[inputindex, siteindex] = updateleftframe(
         problem.leftframes[inputindex, siteindex-1],
         problem.inputs[inputindex][siteindex],
-        Iset
+        Iset,
+        problem.framebuffer
     )
     nothing
 end
@@ -96,11 +120,17 @@ end
 function updaterightframe(
     rightframe::AbstractMatrix{ValueType},
     sitetensor::AbstractArray{ValueType,3},
-    Jset::AbstractVector{<:Integer}
+    Jset::AbstractVector{<:Integer},
+    buffer::Vector{ValueType}
 ) where {ValueType}
-    newframe = reshape(contract(sitetensor, ndims(sitetensor), rightframe, [1]), size(sitetensor, 1), :)
-    return newframe[:, Jset]
+    newframe = buffermatrix(buffer, size(sitetensor, 1) * size(sitetensor, 2), size(rightframe, 2))
+    mul!(newframe, reshape(sitetensor, :, size(sitetensor, 3)), rightframe)
+    return reshape(newframe, size(sitetensor, 1), :)[:, Jset]
 end
+
+updaterightframe(rightframe::AbstractMatrix{ValueType}, sitetensor::AbstractArray{ValueType,3},
+                 Jset::AbstractVector{<:Integer}) where {ValueType} =
+    updaterightframe(rightframe, sitetensor, Jset, ValueType[])
 
 function updaterightframe!(
     problem::ElementwiseProblem{ValueType,N},
@@ -110,7 +140,8 @@ function updaterightframe!(
     problem.rightframes[inputindex, siteindex] = updaterightframe(
         problem.rightframes[inputindex, siteindex+1],
         problem.inputs[inputindex][siteindex],
-        Jset
+        Jset,
+        problem.framebuffer
     )
     nothing
 end
@@ -130,14 +161,23 @@ function pitensor(
     left::AbstractMatrix{ValueType},
     Tleft::AbstractArray{ValueType,3},
     Tright::AbstractArray{ValueType,3},
-    right::AbstractMatrix{ValueType}
+    right::AbstractMatrix{ValueType},
+    leftbuffer::Vector{ValueType},
+    rightbuffer::Vector{ValueType}
 ) where {ValueType}
     @debug "Pi tensor" size(left) size(Tleft) size(Tright) size(right)
     size(left, 2) ≠ size(Tleft, 1) || size(Tleft, 3) ≠ size(Tright, 1) || size(Tright, 3) ≠ size(right, 1)
-    L = contract(left, [2], Tleft, [1])
-    R = contract(Tright, [3], right, [1])
-    return contract(L, [3], R, [1])
+    L = buffermatrix(leftbuffer, size(left, 1), size(Tleft, 2) * size(Tleft, 3))
+    mul!(L, left, reshape(Tleft, size(Tleft, 1), :))
+    R = buffermatrix(rightbuffer, size(Tright, 1) * size(Tright, 2), size(right, 2))
+    mul!(R, reshape(Tright, :, size(Tright, 3)), right)
+    Π = reshape(L, :, size(Tleft, 3)) * reshape(R, size(Tright, 1), :)
+    return reshape(Π, size(left, 1), size(Tleft, 2), size(Tright, 2), size(right, 2))
 end
+
+pitensor(left::AbstractMatrix{ValueType}, Tleft::AbstractArray{ValueType,3},
+         Tright::AbstractArray{ValueType,3}, right::AbstractMatrix{ValueType}) where {ValueType} =
+    pitensor(left, Tleft, Tright, right, ValueType[], ValueType[])
 
 function pitensor(
     problem::ElementwiseProblem{ValueType,N},
@@ -147,7 +187,9 @@ function pitensor(
         problem.leftframes[inputindex, bondindex-1],
         problem.inputs[inputindex][bondindex],
         problem.inputs[inputindex][bondindex+1],
-        problem.rightframes[inputindex, bondindex+2]
+        problem.rightframes[inputindex, bondindex+2],
+        problem.leftbuffer,
+        problem.rightbuffer
     )
 end
 
