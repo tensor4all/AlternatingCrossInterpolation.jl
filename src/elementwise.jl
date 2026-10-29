@@ -171,12 +171,13 @@ function localupdate!(
     end
     abstol = effectivetolerance(problem, truncationparameters)
 
-    luci = TCI.MatrixLUCI(
+    # rrlu! overwrites Π, which is not read below (only its size is); rrlu would copy it first.
+    luci = TCI.MatrixLUCI{eltype(Π)}(TCI.rrlu!(
         reshape(Π, prod(size(Π)[1:2]), prod(size(Π)[3:4]));
         leftorthogonal=leftorthogonal,
         maxrank=truncationparameters.maxbonddimension,
         abstol=abstol
-    )
+    ))
 
     problem.solution.sitetensors[bondindex] = reshape(TCI.left(luci), size(Π, 1), size(Π, 2), :)
     problem.solution.sitetensors[bondindex+1] = reshape(TCI.right(luci), :, size(Π, 3), size(Π, 4))
