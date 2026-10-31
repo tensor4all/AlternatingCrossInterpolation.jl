@@ -1,3 +1,17 @@
+"""
+    permutedimsunlessidentity(A, perm)
+
+`permutedims(A, perm)`, or `A` itself when `perm` is the identity and `A` is an `Array`: the
+reshape that follows then reads the same memory in the same order, without a copy. The result is
+only read.
+"""
+function permutedimsunlessidentity(A, perm)
+    if A isa Array && perm == 1:ndims(A)
+        return A
+    end
+    return permutedims(A, perm)
+end
+
 function contract(matrixop, A, Aindices, B, Bindices; indexpermutation=[])
     if length(Aindices) != length(Bindices)
         error("Different number of legs to contract for tensors A and B.")
@@ -15,11 +29,11 @@ function contract(matrixop, A, Aindices, B, Bindices; indexpermutation=[])
 
     # reshape tensors into matrices with "thick" legs
     A2 = reshape(
-        permutedims(A, tuple(cat(dims=1, Arestinds, Aindices))...),
+        permutedimsunlessidentity(A, cat(dims=1, Arestinds, Aindices)),
         (prod(size(A)[Arestinds]), prod(size(A)[Aindices]))
     )
     B2 = reshape(
-        permutedims(B, tuple(cat(dims=1, Bindices, Brestinds))...),
+        permutedimsunlessidentity(B, cat(dims=1, Bindices, Brestinds)),
         (prod(size(B)[Bindices]), prod(size(B)[Brestinds]))
     )
     C2 = matrixop(A2, B2) # matrix multiplication
